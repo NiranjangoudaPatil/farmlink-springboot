@@ -1,0 +1,32 @@
+spring:
+  datasource:
+    # H2 in MySQL mode: tests need no database installed, but still run the real Flyway migration
+    url: jdbc:h2:mem:farmlink;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: validate      # fails the test if entities and the Flyway schema ever drift apart
+    open-in-view: false
+  flyway:
+    enabled: true
+  jackson:
+    mapper:
+      accept-case-insensitive-enums: true
+
+app:
+  jwt:
+    secret: test-secret-test-secret-test-secret-123456
+    expiration-minutes: 60
+  upload-dir: target/test-uploads
+  cors-origins: http://localhost:5173
+  razorpay:
+    key-id: rzp_test_key
+    key-secret: test-razorpay-secret
+  mail:
+    enabled: false
+    from: test@farmlink.local
+  admin:
+    email: admin@farmlink.test
+    password: admin-pass-123
+    name: Test Admin
