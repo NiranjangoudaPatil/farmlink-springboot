@@ -47,6 +47,12 @@ class FarmLinkFlowTest {
         mvc.perform(post("/api/products").header("Authorization", bearer(retailer))
                 .contentType(MediaType.APPLICATION_JSON).content(productJson("Nope", "10"))).andExpect(status().isForbidden());
 
+        // an unverified farmer may not list products; after admin verification they can
+        mvc.perform(post("/api/products").header("Authorization", bearer(farmer))
+                .contentType(MediaType.APPLICATION_JSON).content(productJson("Tomatoes", "50")))
+                .andExpect(status().isForbidden());
+        verifyFarmer(farmer);
+
         // farmer lists a product (50 kg)
         String productId = data(call(post("/api/products"), farmer, productJson("Tomatoes", "50")), "id");
 
@@ -68,7 +74,10 @@ class FarmLinkFlowTest {
         mvc.perform(get("/api/notifications/unread-count").header("Authorization", bearer(farmer)))
                 .andExpect(jsonPath("$.data.unread").value(2)); // welcome + new order
 
-        // a retailer cannot confirm; the farmer can, and stock drops 50 -> 40
+        // stock dropped 50 -> 40 the moment the order was placed
+        mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(40.0));
+
+        // a retailer cannot confirm; the farmer can, and confirming does not take stock a second time
         patchStatus(retailer, orderId, "CONFIRMED").andExpect(status().isBadRequest());
         patchStatus(farmer, orderId, "CONFIRMED").andExpect(status().isOk());
         mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(40.0));
@@ -101,17 +110,51 @@ class FarmLinkFlowTest {
     }
 
     @Test
-    void cancellingAConfirmedOrderGivesStockBack() throws Exception {
+    void stockIsReservedAtPlacement_andReturnedOnCancel() throws Exception {
         String farmer = register("farmer2@test.com", "FARMER");
         String retailer = register("retailer2@test.com", "RETAILER");
+        verifyFarmer(farmer);
         String productId = data(call(post("/api/products"), farmer, productJson("Onions", "30")), "id");
         String orderId = node(call(post("/api/orders"), retailer, orderJson(productId, "10")))
                 .path("data").get(0).path("id").asText();
 
+        // 30 -> 20 as soon as the order is placed
+        mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(20.0));
         patchStatus(farmer, orderId, "CONFIRMED").andExpect(status().isOk());
         mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(20.0));
         patchStatus(farmer, orderId, "CANCELLED").andExpect(status().isOk());
         mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(30.0));
+
+        // a still-PENDING order that the retailer cancels also gives its stock back
+        String second = node(call(post("/api/orders"), retailer, orderJson(productId, "5")))
+                .path("data").get(0).path("id").asText();
+        mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(25.0));
+        patchStatus(retailer, second, "CANCELLED").andExpect(status().isOk());
+        mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(30.0));
+        // and an already-cancelled order can't be cancelled again (so stock can't be returned twice)
+        patchStatus(retailer, second, "CANCELLED").andExpect(status().isBadRequest());
+        mvc.perform(get("/api/products/" + productId)).andExpect(jsonPath("$.data.quantityAvailable").value(30.0));
+    }
+
+    @Test
+    void uploadedProductImageCanBeFetchedBack() throws Exception {
+        String farmer = register("farmer5@test.com", "FARMER");
+        verifyFarmer(farmer);
+        String productId = data(call(post("/api/products"), farmer, productJson("Carrots", "20")), "id");
+
+        byte[] bytes = {1, 2, 3, 4, 5};
+        String url = data(node(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .multipart("/api/products/" + productId + "/image")
+                        .file(new org.springframework.mock.web.MockMultipartFile("file", "carrot.png", "image/png", bytes))
+                        .header("Authorization", bearer(farmer)))
+                .andExpect(status().isOk())), "imageUrl");
+        assertThat(url).startsWith("/uploads/");
+
+        // public (no token) and served with the exact bytes that were uploaded
+        byte[] served = mvc.perform(get(url)).andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        assertThat(served).isEqualTo(bytes);
+        // an unknown file is a clean 404
+        mvc.perform(get("/uploads/does-not-exist.png")).andExpect(status().isNotFound());
     }
 
     @Test
@@ -153,6 +196,7 @@ class FarmLinkFlowTest {
 
         String farmer = register("farmer4@test.com", "FARMER");
         String retailer = register("retailer4@test.com", "RETAILER");
+        verifyFarmer(farmer);
         String productId = data(call(post("/api/products"), farmer, productJson("Wheat", "100")), "id");
         String orderId = node(call(post("/api/orders"), retailer, orderJson(productId, "10")))
                 .path("data").get(0).path("id").asText();
@@ -182,6 +226,16 @@ class FarmLinkFlowTest {
     private String register(String email, String role) throws Exception {
         return data(node(mvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
                 .content(registerJson(email, role))).andExpect(status().isCreated())), "token");
+    }
+
+    /** Logs in as the seeded admin and verifies the given farmer, like the Admin Portal's Verify button. */
+    private void verifyFarmer(String farmerToken) throws Exception {
+        String admin = data(node(mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"admin@farmlink.test\",\"password\":\"admin-pass-123\"}"))
+                .andExpect(status().isOk())), "token");
+        String farmerId = data(call(get("/api/users/me"), farmerToken, null), "id");
+        mvc.perform(patch("/api/admin/users/" + farmerId + "/verification").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"verified\":true}")).andExpect(status().isOk());
     }
 
     private String registerJson(String email, String role) throws Exception {

@@ -1,5 +1,7 @@
 package com.farmlink.config;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
@@ -18,7 +20,16 @@ public class WebConfig implements WebMvcConfigurer {
     /** Serves uploaded product images at /uploads/**. */
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        String location = Path.of(props.uploadDir()).toAbsolutePath().toUri().toString();
+        Path dir = Path.of(props.uploadDir()).toAbsolutePath().normalize();
+        try {
+            // Path.toUri() only ends the URI with "/" when the folder already exists, and Spring needs that "/"
+            // to resolve files inside it. So create the folder now and force the slash.
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot create upload directory " + dir, e);
+        }
+        String location = dir.toUri().toString();
+        if (!location.endsWith("/")) location += "/";
         registry.addResourceHandler("/uploads/**").addResourceLocations(location);
     }
 

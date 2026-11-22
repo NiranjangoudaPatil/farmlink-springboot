@@ -45,9 +45,12 @@ public class OrderService {
         Map<UUID, BigDecimal> wanted = new LinkedHashMap<>();
         req.items().forEach(l -> wanted.merge(l.productId(), l.quantity(), BigDecimal::add));
 
-        List<Product> found = products.findAllByIdIn(wanted.keySet());
-        if (found.size() != wanted.size()) {
-            throw ApiException.notFound("One or more products no longer exist");
+        // Lock every product row, always in id order (a fixed order prevents deadlocks between buyers), so that
+        // two retailers can never take the same stock at the same time. The locks last until the transaction ends.
+        List<Product> found = new ArrayList<>();
+        for (UUID id : wanted.keySet().stream().sorted().toList()) {
+            found.add(products.findByIdForUpdate(id)
+                    .orElseThrow(() -> ApiException.notFound("One or more products no longer exist")));
         }
 
         Map<UUID, List<Product>> byFarmer = new LinkedHashMap<>();
@@ -84,6 +87,8 @@ public class OrderService {
                 item.setTotalPrice(p.getPricePerUnit().multiply(qty)); // price is read server-side, never trusted from client
                 order.addItem(item);
                 total = total.add(item.getTotalPrice());
+                // reserve the stock right now: the marketplace shows the reduced quantity immediately
+                p.setQuantityAvailable(p.getQuantityAvailable().subtract(qty));
             }
             order.setTotalAmount(total);
             orders.save(order);
@@ -134,11 +139,10 @@ public class OrderService {
             throw ApiException.badRequest("You cannot change an order from " + current + " to " + next);
         }
 
-        if (next == OrderStatus.CONFIRMED) {
-            adjustStock(o, true);
-        } else if (next == OrderStatus.CANCELLED && current != OrderStatus.PENDING) {
-            adjustStock(o, false); // stock was reserved at confirmation, give it back
+        if (next == OrderStatus.CANCELLED) {
+            adjustStock(o, false); // stock was reserved when the order was placed, give it back
         }
+        // CONFIRMED / SHIPPED / DELIVERED never change stock: it was already taken at placement
         o.setStatus(next);
 
         User other = isFarmer ? o.getRetailer() : o.getFarmer();
@@ -147,7 +151,7 @@ public class OrderService {
         return OrderDto.from(o);
     }
 
-    /** Takes (or returns) the ordered quantities from product stock under a row lock. */
+    /** Returns (or takes) the ordered quantities to/from product stock under a row lock. */
     private void adjustStock(Order o, boolean take) {
         List<OrderItem> sorted = o.getItems().stream()
                 .sorted(Comparator.comparing(i -> i.getProduct().getId())) // fixed lock order avoids deadlocks

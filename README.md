@@ -57,7 +57,7 @@ All responses use `{ "status": "success|error", "data": ..., "message": ... }`. 
 | Admin | `GET /api/admin/users \| products \| orders \| reviews \| analytics` · `PATCH /users/{id}/verification` · `PATCH /products/{id}/availability` | admin |
 
 **Order status rules:** farmer `PENDING→CONFIRMED|CANCELLED`, `CONFIRMED→SHIPPED|CANCELLED`, `SHIPPED→DELIVERED`;
-retailer may only cancel a `PENDING` order. Confirming takes stock under a row lock; cancelling after confirmation returns it.
+retailer may only cancel a `PENDING` order. Stock is reserved (under a row lock) the moment an order is placed, and returned if the order is cancelled.
 
 ## How it maps from Supabase
 
@@ -74,7 +74,7 @@ retailer may only cancel a `PENDING` order. Confirming takes stock under a row l
 ## Deliberate improvements over the original
 
 - Order totals and prices are computed on the server from the database, never trusted from the client.
-- Payment amount is computed server-side; payment marks the order `PAID` and **does not** auto-confirm it, so stock is only taken when the farmer confirms (the original confirmed on payment and skipped the stock check).
+- Payment amount is computed server-side; payment marks the order `PAID` and **does not** auto-confirm it (the original confirmed on payment and skipped the stock check). Stock is reserved when the order is placed, so two buyers can never take the same kilos.
 - One Razorpay payment can cover several orders (a multi-farmer cart).
 - Deleting a product that already has orders hides it instead of breaking order history.
 - Enums are upper-case in JSON (`FARMER`, `PENDING`); query params and request bodies accept any case.

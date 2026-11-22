@@ -43,6 +43,10 @@ public class ProductService {
     @Transactional
     public ProductDto create(UUID farmerId, ProductRequest r) {
         User farmer = userService.getEntity(farmerId);
+        // Only farmers approved by an admin may list produce.
+        if (!farmer.isVerified()) {
+            throw ApiException.forbidden("Your account is awaiting admin verification. You can add products once it is verified.");
+        }
         Product p = new Product();
         p.setFarmer(farmer);
         apply(p, r);
